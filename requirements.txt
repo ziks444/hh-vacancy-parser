@@ -1,0 +1,4 @@
+selenium>=4.6
+pandas>=2.0
+xlsxwriter>=3.0
+matplotlib>=3.7
