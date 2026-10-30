@@ -1,7 +1,15 @@
-#Параметры поиска
+#Параметры поиска (можно переопределить аргументами командной строки)
 QUERY = "Python Developer"
-TARGET_COUNT = 10
-PAGES = 10
+AREA_ID = 1  # 1 — Москва
+AREA_NAME = 'Москва'
+PAGES = 5
+MAX_VACANCIES = 200
+
+#Пауза между запросами к hh.ru, сек — чтобы не создавать лишнюю нагрузку
+REQUEST_DELAY = 1.0
+
+#Куда сохранять результаты
+RAW_DIR = 'data/raw'
 OUTPUT_FILE = 'vacancies_moscow.xlsx'
 
 #Курсы для конвертации в рубли

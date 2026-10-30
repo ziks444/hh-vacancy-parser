@@ -1,9 +1,12 @@
+from datetime import datetime
+import re
+import time
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-import time
 
-from transform import parse_salary, is_python_vacancy
+from transform import vacancy_id_from_url
 
 
 def create_driver():
@@ -19,16 +22,16 @@ def create_driver():
     return webdriver.Chrome(options=options)
 
 
-def collect_vacancy_links(driver, query, pages):
-    #Сбор ссылок на Python-вакансии со страниц поиска
+def collect_vacancy_links(driver, query, area_id, pages, max_links, delay):
+    #Сбор ссылок на все вакансии со страниц поиска
     vacancy_links = []
 
     for page in range(pages):
-        url = f"https://hh.ru/search/vacancy?text={query.replace(' ', '+')}&area=1&page={page}"
+        url = f"https://hh.ru/search/vacancy?text={query.replace(' ', '+')}&area={area_id}&page={page}"
         print(f"Сбор ссылок: страница {page + 1}/{pages}...")
 
         driver.get(url)
-        time.sleep(1.5)
+        time.sleep(delay + 0.5)
 
         try:
             buttons = driver.find_elements(By.XPATH, "//button[contains(text(), 'Понятно')]")
@@ -38,113 +41,71 @@ def collect_vacancy_links(driver, query, pages):
         except:
             pass
 
-        try:
-            links = driver.find_elements(By.CSS_SELECTOR, "a[data-qa='serp-item__title']")
-            page_python_count = 0
-            for link in links:
-                href = link.get_attribute('href')
-                title_text = link.text.strip()
-                if href and 'hh.ru/vacancy/' in href and href not in vacancy_links:
-                    if is_python_vacancy(title_text):
-                        vacancy_links.append(href)
-                        page_python_count += 1
-            print(f"  Python вакансий на странице: {page_python_count}")
-        except:
-            pass
+        links = driver.find_elements(By.CSS_SELECTOR, "a[data-qa='serp-item__title']")
+        page_count = 0
+        for link in links:
+            href = (link.get_attribute('href') or '').split('?')[0]
+            if 'hh.ru/vacancy/' in href and href not in vacancy_links:
+                vacancy_links.append(href)
+                page_count += 1
+        print(f"  Новых вакансий на странице: {page_count}")
 
-        if page < pages - 1:
-            time.sleep(1)
+        # Поиск закончился раньше, чем страницы
+        if not links:
+            break
 
-    return vacancy_links
+        if len(vacancy_links) >= max_links:
+            break
+
+        time.sleep(delay)
+
+    return vacancy_links[:max_links]
+
+
+def _text(driver, selector):
+    #Текст элемента или пустая строка, если элемента нет
+    elements = driver.find_elements(By.CSS_SELECTOR, selector)
+    return elements[0].text.strip() if elements else ''
 
 
 def parse_vacancy_page(driver, url):
-    #Парсинг одной страницы вакансии
-    data = {
-        'Название вакансии': '',
-        'Опыт работы': '',
-        'График работы': '',
-        'Занятость': '',
-        'Зарплата (текст)': '',
-        'Исходная валюта': '',
-        'Исходный период': '',
-        'Зарплата (min, руб/мес)': None,
-        'Зарплата (max, руб/мес)': None,
-        'Зарплата (avg, руб/мес)': None,
-        'Ключевые навыки': '',
-        'Регион': 'Москва'
-    }
-
+    #Парсинг одной страницы вакансии: сохраняем поля как есть, без обработки
     try:
         driver.get(url)
         time.sleep(1)
 
-        try:
-            title = driver.find_element(By.CSS_SELECTOR, "[data-qa='vacancy-title']")
-            data['Название вакансии'] = title.text.strip()
-        except:
-            pass
+        salary_type = None
+        if driver.find_elements(By.CSS_SELECTOR, "[data-qa='vacancy-salary-compensation-type-net']"):
+            salary_type = 'net'
+        elif driver.find_elements(By.CSS_SELECTOR, "[data-qa='vacancy-salary-compensation-type-gross']"):
+            salary_type = 'gross'
 
-        try:
-            salary = driver.find_element(By.CSS_SELECTOR, "[data-qa='vacancy-salary']")
-            salary_text = salary.text.strip()
-            data['Зарплата (текст)'] = salary_text
+        skills = []
+        for skill_el in driver.find_elements(By.CSS_SELECTOR, "[data-qa='skills-element']"):
+            skill_text = skill_el.text.strip()
+            if skill_text:
+                skills.append(skill_text)
 
-            s_min, s_max, s_avg, period, currency = parse_salary(salary_text)
-            data['Исходный период'] = period
-            data['Исходная валюта'] = currency
-            data['Зарплата (min, руб/мес)'] = s_min
-            data['Зарплата (max, руб/мес)'] = s_max
-            data['Зарплата (avg, руб/мес)'] = s_avg
+        # Дата публикации есть только текстом: «Вакансия опубликована 23 октября 2026 в Москве»
+        body_text = driver.find_element(By.TAG_NAME, 'body').text
+        published = re.search(r'Вакансия опубликована[^\n]*', body_text)
 
-            # Пометка, что произведен пересчет
-            notes = []
-            if currency != 'RUB':
-                notes.append(f'конвертировано из {currency}')
-            if period != 'месяц' and period != 'проект' and s_avg is not None:
-                notes.append(f'пересчитано с {period}а')
-            if notes:
-                data['Зарплата (текст)'] = f"{salary_text} ({'; '.join(notes)})"
-        except:
-            data['Зарплата (текст)'] = 'Не указана'
-            data['Исходный период'] = 'месяц'
-            data['Исходная валюта'] = 'RUB'
-
-        try:
-            exp = driver.find_element(By.CSS_SELECTOR, "[data-qa='vacancy-experience']")
-            data['Опыт работы'] = exp.text.strip()
-        except:
-            pass
-
-        try:
-            schedule = driver.find_element(By.CSS_SELECTOR, "[data-qa='work-schedule-by-days-text']")
-            data['График работы'] = schedule.text.strip()
-        except:
-            pass
-
-        try:
-            employment = driver.find_element(By.CSS_SELECTOR, "[data-qa='common-employment-text']")
-            data['Занятость'] = employment.text.strip()
-        except:
-            pass
-
-        try:
-            skill_elements = driver.find_elements(By.CSS_SELECTOR, "[data-qa='skills-element']")
-            skills_list = []
-            for skill_el in skill_elements:
-                try:
-                    skill_div = skill_el.find_element(By.CSS_SELECTOR, "div[class*='magritte-tag']")
-                    skill_text = skill_div.text.strip()
-                    if skill_text:
-                        skills_list.append(skill_text)
-                except:
-                    skill_text = skill_el.text.strip()
-                    if skill_text:
-                        skills_list.append(skill_text)
-            data['Ключевые навыки'] = '; '.join(skills_list[:10])
-        except:
-            pass
-
-        return data
+        return {
+            'id': vacancy_id_from_url(url),
+            'url': url,
+            'title': _text(driver, "[data-qa='vacancy-title']"),
+            'employer': _text(driver, "[data-qa='vacancy-company-name']"),
+            'salary_text': _text(driver, "[data-qa='vacancy-salary']"),
+            'salary_type': salary_type,
+            'experience': _text(driver, "[data-qa='vacancy-experience']"),
+            'employment': _text(driver, "[data-qa='common-employment-text']"),
+            'schedule': _text(driver, "[data-qa='work-schedule-by-days-text']"),
+            'working_hours': _text(driver, "[data-qa='working-hours-text']"),
+            'work_format': _text(driver, "[data-qa='work-formats-text']"),
+            'skills': skills,
+            'address': _text(driver, "[data-qa='vacancy-view-raw-address']"),
+            'published_text': published.group(0).strip() if published else '',
+            'scraped_at': datetime.now().isoformat(timespec='seconds'),
+        }
     except:
         return None

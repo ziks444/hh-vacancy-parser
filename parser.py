@@ -1,94 +1,102 @@
+import argparse
 import time
 from collections import Counter
 
 import pandas as pd
 
-from config import QUERY, TARGET_COUNT, PAGES, OUTPUT_FILE, USD_TO_RUB, EUR_TO_RUB
-from extract import create_driver, collect_vacancy_links, parse_vacancy_page
-from transform import is_python_vacancy, is_complete_vacancy
+import config
 from report import build_excel_report
+from storage import save_raw, load_raw
+from transform import normalize_vacancy
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Сбор и анализ вакансий с hh.ru')
+    parser.add_argument('--query', default=config.QUERY, help='поисковый запрос')
+    parser.add_argument('--pages', type=int, default=config.PAGES, help='сколько страниц поиска пройти')
+    parser.add_argument('--max', type=int, default=config.MAX_VACANCIES, help='максимум вакансий')
+    parser.add_argument('--from-raw', metavar='PATH',
+                        help='не собирать заново, а построить отчёт по сохранённому JSON')
+    parser.add_argument('--output', default=config.OUTPUT_FILE, help='имя Excel-файла')
+    return parser.parse_args()
+
+
+def collect(query, pages, max_vacancies):
+    #Сбор вакансий через Selenium; сырые данные сохраняются даже при прерывании
+    from extract import create_driver, collect_vacancy_links, parse_vacancy_page
+
+    driver = create_driver()
+    records = []
+
+    try:
+        print(f"Поиск вакансий: {query}")
+        print(f"Регион: {config.AREA_NAME}")
+        print(f"Не больше {max_vacancies} вакансий, {pages} страниц поиска")
+        print("-" * 60)
+
+        vacancy_links = collect_vacancy_links(driver, query, config.AREA_ID, pages,
+                                              max_vacancies, config.REQUEST_DELAY)
+
+        print(f"\nВсего найдено ссылок: {len(vacancy_links)}")
+        print("-" * 60)
+
+        for num, link in enumerate(vacancy_links, 1):
+            data = parse_vacancy_page(driver, link)
+            if data:
+                records.append(data)
+                print(f"[{num}/{len(vacancy_links)}] {data['title'][:50]} | {data['salary_text'] or 'ЗП не указана'}")
+            else:
+                print(f"[{num}/{len(vacancy_links)}] Пропущено: ошибка парсинга {link}")
+
+            time.sleep(config.REQUEST_DELAY)
+
+    except KeyboardInterrupt:
+        print("\nСбор прерван, сохраняю то, что успел собрать...")
+
+    finally:
+        driver.quit()
+        if records:
+            path = save_raw(records, config.RAW_DIR, query)
+            print(f"Сырые данные сохранены: {path}")
+
+    return records
 
 
 def main():
     #основной парсинг
-    driver = create_driver()
-    vacancies = []
+    args = parse_args()
 
-    try:
-        print(f"Поиск вакансий: {QUERY}")
-        print(f"Регион: Москва")
-        print(f"Цель: {TARGET_COUNT} вакансий с ПОЛНЫМИ данными")
-        print(f"Курсы валют: 1 USD = {USD_TO_RUB} RUB, 1 EUR = {EUR_TO_RUB} RUB")
-        print("-" * 60)
+    if args.from_raw:
+        query, records = load_raw(args.from_raw)
+        query = query or args.query
+        print(f"Загружено из {args.from_raw}: {len(records)} вакансий")
+    else:
+        query = args.query
+        records = collect(query, args.pages, args.max)
 
-        vacancy_links = collect_vacancy_links(driver, QUERY, PAGES)
+    if not records:
+        print("ВНИМАНИЕ: Не собрано ни одной вакансии!")
+        return
 
-        print(f"\nВсего найдено ссылок: {len(vacancy_links)}")
-        print(f"Парсинг вакансий (нужно {TARGET_COUNT} с полными данными)...")
-        print("-" * 60)
+    df = pd.DataFrame([normalize_vacancy(r) for r in records])
+    with_salary = df[df['Зарплата (avg, руб/мес)'].notna()]
 
-        complete_count = 0
-        processed_count = 0
+    period_counts = Counter(with_salary['Исходный период'])
+    currency_counts = Counter(with_salary['Исходная валюта'])
 
-        for link in vacancy_links:
-            if complete_count >= TARGET_COUNT:
-                break
+    print("\n" + "=" * 60)
+    print(f"Всего вакансий: {len(df)}")
+    print(f"С указанной зарплатой: {len(with_salary)}")
+    print(f"Периоды зарплат:")
+    for period, count in period_counts.items():
+        print(f"  {period}: {count}")
+    print(f"Валюты:")
+    for curr, count in currency_counts.items():
+        print(f"  {curr}: {count}")
+    print("=" * 60)
 
-            processed_count += 1
-            data = parse_vacancy_page(driver, link)
-
-            if is_complete_vacancy(data):
-                vacancies.append(data)
-                complete_count += 1
-                print(f"[{complete_count}/{TARGET_COUNT}] {data['Название вакансии'][:50]}")
-                print(f"      Зарплата: {data['Зарплата (текст)']}")
-                print(f"      Валюта: {data['Исходная валюта']}, Период: {data['Исходный период']}")
-                print(f"      Опыт: {data['Опыт работы']}")
-                print(f"      Навыки: {len(data['Ключевые навыки'].split(';'))} шт.")
-            else:
-                reasons = []
-                if not data:
-                    reasons.append("ошибка парсинга")
-                elif not is_python_vacancy(data.get('Название вакансии', '')):
-                    reasons.append("не Python")
-                elif not data.get('Зарплата (avg, руб/мес)'):
-                    reasons.append("нет ЗП")
-                elif not data.get('Опыт работы'):
-                    reasons.append("нет опыта")
-                elif not data.get('Ключевые навыки'):
-                    reasons.append("нет навыков")
-                if reasons:
-                    print(f"  Пропущено: {', '.join(reasons)}")
-
-            time.sleep(0.5)
-
-        print("\n" + "=" * 60)
-        print(f"Обработано ссылок: {processed_count}")
-        print(f"Найдено полных вакансий: {len(vacancies)}")
-
-        periods = [v['Исходный период'] for v in vacancies if v]
-        currencies = [v['Исходная валюта'] for v in vacancies if v]
-        period_counts = Counter(periods)
-        currency_counts = Counter(currencies)
-
-        print(f"Периоды зарплат:")
-        for period, count in period_counts.items():
-            print(f"  {period}: {count}")
-        print(f"Валюты:")
-        for curr, count in currency_counts.items():
-            print(f"  {curr}: {count}")
-        print("=" * 60)
-
-        if len(vacancies) < 5:
-            print("ВНИМАНИЕ: Мало данных с полной информацией!")
-            return
-
-        df = pd.DataFrame(vacancies)
-        build_excel_report(df, currency_counts, period_counts, OUTPUT_FILE)
-        print(f"\nФайл сохранен: {OUTPUT_FILE}")
-
-    finally:
-        driver.quit()
+    build_excel_report(df, query, config.AREA_NAME, currency_counts, period_counts, args.output)
+    print(f"\nФайл сохранен: {args.output}")
 
 
 if __name__ == '__main__':
