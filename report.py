@@ -10,7 +10,17 @@ import pandas as pd
 from config import USD_TO_RUB, EUR_TO_RUB
 
 
-def build_excel_report(df, currency_counts, period_counts, output_file):
+COLUMN_WIDTHS = {
+    'Название вакансии': 45,
+    'Работодатель': 30,
+    'Зарплата (текст)': 30,
+    'Ключевые навыки': 40,
+    'Адрес': 40,
+    'Ссылка': 35,
+}
+
+
+def build_excel_report(df, query, area_name, currency_counts, period_counts, output_file):
     #Сохранение вакансий в Excel со статистикой и графиками
     writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
 
@@ -26,19 +36,7 @@ def build_excel_report(df, currency_counts, period_counts, output_file):
     })
     for col_num, value in enumerate(df.columns.values):
         worksheet.write(0, col_num, value, header_fmt)
-
-    worksheet.set_column('A:A', 45)
-    worksheet.set_column('B:B', 20)
-    worksheet.set_column('C:C', 15)
-    worksheet.set_column('D:D', 15)
-    worksheet.set_column('E:E', 30)
-    worksheet.set_column('F:F', 15)
-    worksheet.set_column('G:G', 15)
-    worksheet.set_column('H:H', 22)
-    worksheet.set_column('I:I', 22)
-    worksheet.set_column('J:J', 22)
-    worksheet.set_column('K:K', 40)
-    worksheet.set_column('L:L', 15)
+        worksheet.set_column(col_num, col_num, COLUMN_WIDTHS.get(value, 18))
 
     salaries = df['Зарплата (avg, руб/мес)'].dropna()
 
@@ -88,7 +86,7 @@ def build_excel_report(df, currency_counts, period_counts, output_file):
         plt.axvline(avg_salary, color='red', linestyle='--', linewidth=2, label=f'Средняя: {avg_salary:,.0f}')
         plt.axvline(median_salary, color='green', linestyle='--', linewidth=2,
                     label=f'Медиана: {median_salary:,.0f}')
-        plt.title('Распределение зарплат Python-разработчиков в Москве (руб./мес.)')
+        plt.title(f'Распределение зарплат: {query}, {area_name} (руб./мес.)')
         plt.xlabel('Зарплата (руб./мес.)')
         plt.ylabel('Количество вакансий')
         plt.legend()
@@ -116,7 +114,7 @@ def build_excel_report(df, currency_counts, period_counts, output_file):
 
         skills_sheet = workbook.add_worksheet('Обязательные навыки')
 
-        skills_sheet.write('A1', 'ТОП НАВЫКОВ PYTHON-РАЗРАБОТЧИКОВ', fmt_title)
+        skills_sheet.write('A1', f'ТОП НАВЫКОВ: {query.upper()}', fmt_title)
 
         skills_sheet.write('A3', 'Навык', fmt_title)
         skills_sheet.write('B3', 'Количество вакансий', fmt_title)
@@ -131,7 +129,7 @@ def build_excel_report(df, currency_counts, period_counts, output_file):
         plt.figure(figsize=(12, 8))
         bars = plt.barh(range(len(skills_df)), skills_df['Количество'][::-1], color='#70AD47', edgecolor='black')
         plt.yticks(range(len(skills_df)), skills_df['Навык'][::-1])
-        plt.title('Обязательные навыки для Python-разработчиков (Топ-15)')
+        plt.title(f'Обязательные навыки: {query} (Топ-15)')
         plt.xlabel('Количество упоминаний в вакансиях')
 
         for bar, count in zip(bars, skills_df['Количество'][::-1]):
@@ -174,7 +172,7 @@ def build_excel_report(df, currency_counts, period_counts, output_file):
         plt.figure(figsize=(10, 6))
         bars = plt.bar(range(len(exp_counts)), exp_counts.values, color='#ED7D31', edgecolor='black')
         plt.xticks(range(len(exp_counts)), exp_counts.index, rotation=30, ha='right')
-        plt.title('Требования к опыту работы Python-разработчиков')
+        plt.title(f'Требования к опыту работы: {query}')
         plt.xlabel('Опыт работы')
         plt.ylabel('Количество вакансий')
 
@@ -234,9 +232,9 @@ def build_excel_report(df, currency_counts, period_counts, output_file):
 
     summary_sheet.write('A1', 'ОПИСАНИЕ РЕЗУЛЬТАТОВ ПАРСИНГА', fmt_title)
     summary_sheet.write('A3', 'Общая информация:', fmt_title)
-    summary_sheet.write('A4', f'Регион поиска: Москва', fmt)
+    summary_sheet.write('A4', f'Запрос: {query}, регион поиска: {area_name}', fmt)
     summary_sheet.write('A5', f'Всего проанализировано вакансий: {len(df)}', fmt)
-    summary_sheet.write('A6', f'Все вакансии содержат ПОЛНЫЕ данные', fmt)
+    summary_sheet.write('A6', f'Из них с указанной зарплатой: {len(salaries)}', fmt)
     summary_sheet.write('A7', f'Все зарплаты приведены к рублям/месяц', fmt)
     summary_sheet.write('A8', f'Курсы: 1 USD = {USD_TO_RUB} RUB, 1 EUR = {EUR_TO_RUB} RUB', fmt)
 

@@ -114,47 +114,94 @@ def parse_salary(text):
     return monthly_min, monthly_max, monthly_avg, period, currency
 
 
-def is_python_vacancy(title):
-    # проверка, что вакансия про пайтон
-    if not title:
-        return False
-    title_lower = title.lower()
-
-    keywords = ['python', 'питон', 'py ', 'py-', 'python developer', 'python engineer', 'django', 'flask', 'fastapi']
-    exclude_keywords = ['java ', 'java,', 'javascript', 'c++', 'c#', 'php', 'ruby', 'swift', 'kotlin', 'go ', 'golang']
-
-    for exclude in exclude_keywords:
-        if exclude in title_lower:
-            return False
-
-    for keyword in keywords:
-        if keyword in title_lower:
-            return True
-
-    return False
+MONTHS = {
+    'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
+    'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12,
+}
 
 
-def is_complete_vacancy(data):
-    #проверка что поля заполнены
-    if not data:
-        return False
+def vacancy_id_from_url(url):
+    #ID вакансии из ссылки вида https://hh.ru/vacancy/123456
+    match = re.search(r'/vacancy/(\d+)', url or '')
+    return match.group(1) if match else None
 
-    if not is_python_vacancy(data['Название вакансии']):
-        return False
 
-    if not data['Зарплата (avg, руб/мес)'] or data['Зарплата (текст)'] == 'Не указана':
-        return False
+def strip_label(text, label):
+    #Удаление подписи поля, например «График: 5/2» -> «5/2»
+    text = (text or '').strip()
+    if text.lower().startswith(label.lower()):
+        text = text[len(label):]
+    # Несколько значений приходят построчно: «Полная занятость\nСтажировка»
+    lines = [line.strip() for line in text.strip(' :\n').split('\n')]
+    return ', '.join(line for line in lines if line)
 
-    if not data['Опыт работы']:
-        return False
 
-    if not data['График работы'] and not data['Занятость']:
-        return False
+def parse_published(text):
+    #«Вакансия опубликована 23 октября 2026 в Москве» -> '2026-10-23'
+    match = re.search(r'опубликована\s+(\d{1,2})\s+([а-я]+)\s+(\d{4})', text or '')
+    if not match or match.group(2) not in MONTHS:
+        return None
 
-    if not data['Ключевые навыки']:
-        return False
+    day, month, year = int(match.group(1)), MONTHS[match.group(2)], int(match.group(3))
+    return f'{year:04d}-{month:02d}-{day:02d}'
 
-    if not data['Название вакансии']:
-        return False
 
-    return True
+def city_from_address(address):
+    #«Москва, Арбатская, ...» -> «Москва»
+    city = (address or '').split(',')[0].strip()
+    return city or None
+
+
+def detect_tax(salary_text, salary_type=None):
+    #На руки или до вычета налогов
+    if salary_type == 'net':
+        return 'на руки'
+    if salary_type == 'gross':
+        return 'до вычета налогов'
+
+    text_lower = (salary_text or '').lower()
+    if 'на руки' in text_lower:
+        return 'на руки'
+    if 'до вычета' in text_lower:
+        return 'до вычета налогов'
+    return ''
+
+
+def normalize_vacancy(raw):
+    #Приведение сырой записи к строке таблицы: зарплата в рублях/месяц, поля без подписей
+    salary_text = raw.get('salary_text') or ''
+    s_min, s_max, s_avg, period, currency = parse_salary(salary_text)
+
+    # Пометка, что произведен пересчет
+    salary_note = salary_text or 'Не указана'
+    notes = []
+    if currency != 'RUB':
+        notes.append(f'конвертировано из {currency}')
+    if period != 'месяц' and period != 'проект' and s_avg is not None:
+        notes.append(f'пересчитано с {period}а')
+    if notes:
+        salary_note = f"{salary_text} ({'; '.join(notes)})"
+
+    return {
+        'ID': raw.get('id'),
+        'Название вакансии': raw.get('title', ''),
+        'Работодатель': raw.get('employer', ''),
+        'Опыт работы': raw.get('experience', ''),
+        'Занятость': strip_label(raw.get('employment'), 'Тип занятости'),
+        'График работы': strip_label(raw.get('schedule'), 'График'),
+        'Рабочие часы': strip_label(raw.get('working_hours'), 'Рабочие часы'),
+        'Формат работы': strip_label(raw.get('work_format'), 'Формат работы'),
+        'Зарплата (текст)': salary_note,
+        'Налоги': detect_tax(salary_text, raw.get('salary_type')),
+        'Исходная валюта': currency,
+        'Исходный период': period,
+        'Зарплата (min, руб/мес)': s_min,
+        'Зарплата (max, руб/мес)': s_max,
+        'Зарплата (avg, руб/мес)': s_avg,
+        'Ключевые навыки': '; '.join(raw.get('skills') or []),
+        'Город': city_from_address(raw.get('address')),
+        'Адрес': raw.get('address', ''),
+        'Дата публикации': parse_published(raw.get('published_text')),
+        'Дата сбора': raw.get('scraped_at'),
+        'Ссылка': raw.get('url'),
+    }
